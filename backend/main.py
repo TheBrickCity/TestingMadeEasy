@@ -1,5 +1,7 @@
 from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.responses import PlainTextResponse
+
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -11,6 +13,9 @@ from security import (
 )
 from audit import log_action
 from problems import REGISTRY
+from generation import generate_problems, student_seed_key
+from documents import build_student_tex
+
 from random import Random
 
 Base.metadata.create_all(bind=engine)
@@ -197,3 +202,28 @@ def preview_test(
             )
         )
     return results
+
+@app.get("/tests/{test_id}/preview", response_model=list[schemas.GeneratedProblem])
+def preview_test(
+    test_id: int,
+    seed: int = 0,
+    user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    test = get_owned_test(test_id, user, db)
+    try:
+        return generate_problems(test, str(seed))
+    except ValueError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/tests/{test_id}/tex", response_class=PlainTextResponse)
+def student_tex(
+    test_id: int,
+    student: str,
+    user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    test = get_owned_test(test_id, user, db)
+    problems = generate_problems(test, student_seed_key(test, student))
+    return build_student_tex(test.name, student, problems)
