@@ -1,4 +1,4 @@
-# Math Test Generator
+# Testing Made Easy
 
 A backend API that generates individualized math tests. A teacher builds a test out of parameterized problem types (for example, "derivatives: power rule" with coefficient and exponent bounds), uploads a list of student names, and gets back a zip with one PDF per student. Every student gets different problems, and a given student always gets the same ones.
 
