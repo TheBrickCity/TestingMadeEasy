@@ -1,6 +1,8 @@
 from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.responses import PlainTextResponse
+from fastapi import Response
+from fastapi import File, UploadFile
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -15,8 +17,11 @@ from audit import log_action
 from problems import REGISTRY
 from generation import generate_problems, student_seed_key
 from documents import build_student_tex
+from pdf import compile_pdf, LatexError
+from batch import MAX_UPLOAD_BYTES, build_student_zip, parse_names
 
 from random import Random
+import re
 
 Base.metadata.create_all(bind=engine)
 
@@ -227,3 +232,57 @@ def student_tex(
     test = get_owned_test(test_id, user, db)
     problems = generate_problems(test, student_seed_key(test, student))
     return build_student_tex(test.name, student, problems)
+
+@app.get("/tests/{test_id}/pdf")
+def student_pdf(
+    test_id: int,
+    student: str,
+    user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    test = get_owned_test(test_id, user, db)
+    problems = generate_problems(test, student_seed_key(test, student))
+    tex = build_student_tex(test.name, student, problems)
+
+    try:
+        pdf_bytes = compile_pdf(tex)
+    except LatexError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": 'attachment; filename="test.pdf"'},
+    )
+
+@app.post("/tests/{test_id}/generate")
+def generate_test(
+    test_id: int,
+    names_file: UploadFile = File(...),
+    user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    test = get_owned_test(test_id, user, db)
+    if not test.problems:
+        raise HTTPException(status_code=422, detail="Add at least one problem before generating")
+
+    raw = names_file.file.read(MAX_UPLOAD_BYTES + 1)
+    if len(raw) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="The names file is too large")
+
+    try:
+        names = parse_names(raw)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+    try:
+        zip_bytes = build_student_zip(test, names)
+    except (ValueError, LatexError) as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    filename = re.sub(r"[^A-Za-z0-9._-]+", "_", test.name).strip("_") or "test"
+    return Response(
+        content=zip_bytes,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}_tests.zip"'},
+    )
